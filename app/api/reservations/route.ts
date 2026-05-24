@@ -140,7 +140,7 @@ export async function POST(req: NextRequest) {
         data: {
           key: idempotencyKey,
           endpoint: "/api/reservations",
-          responseBody: responseBody as unknown as Record<string, unknown>,
+         responseBody: JSON.parse(JSON.stringify(responseBody)),
           statusCode: 201,
           reservationId: result.reservation.id,
         },
