@@ -108,7 +108,7 @@ export async function POST(
             key: idempotencyKey,
             endpoint: `/api/reservations/${id}/confirm`,
             responseBody: { error: result.error },
-            statusCode: result.status,
+            statusCode: result.status ?? 500,
           },
         });
       }
