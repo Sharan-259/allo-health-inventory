@@ -3,18 +3,16 @@ import { prisma } from "@/lib/prisma";
 import { ok, gone, notFound, conflict, serverError } from "@/lib/api";
 
 type ReservationRow = { id: string; status: string; expiresAt: Date };
+type TxResult =
+  | { error: string; status: number; reservation?: never }
+  | { reservation: object | null; error?: never; status?: never };
 
-export async function POST(
-  req: NextRequest,
-  context: { params: { id: string } }
-) {
+export async function POST(req: NextRequest, context: { params: { id: string } }) {
   const { id } = context.params;
 
   const idempotencyKey = req.headers.get("idempotency-key");
   if (idempotencyKey) {
-    const existing = await prisma.idempotencyKey.findUnique({
-      where: { key: idempotencyKey },
-    });
+    const existing = await prisma.idempotencyKey.findUnique({ where: { key: idempotencyKey } });
     if (existing) {
       return new Response(JSON.stringify(existing.responseBody), {
         status: existing.statusCode,
@@ -24,17 +22,12 @@ export async function POST(
   }
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
+    const result: TxResult = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw`
-        SELECT id, status, "expiresAt"
-        FROM "Reservation"
-        WHERE id = ${id}
-        FOR UPDATE
+        SELECT id, status, "expiresAt" FROM "Reservation" WHERE id = ${id} FOR UPDATE
       ` as ReservationRow[];
 
-      if (rows.length === 0) {
-        return { error: "Reservation not found", status: 404 };
-      }
+      if (rows.length === 0) return { error: "Reservation not found", status: 404 };
 
       const reservation = rows[0];
 
@@ -68,9 +61,7 @@ export async function POST(
       const confirmed = await tx.reservation.update({
         where: { id },
         data: { status: "CONFIRMED", confirmedAt: new Date() },
-        include: {
-          stockLevel: { include: { product: true, warehouse: true } },
-        },
+        include: { stockLevel: { include: { product: true, warehouse: true } } },
       });
 
       await tx.stockLevel.update({
@@ -84,21 +75,22 @@ export async function POST(
       return { reservation: confirmed };
     });
 
-    if ("error" in result) {
+    if (result.error !== undefined) {
+      const errMsg = result.error;
       const statusCode = result.status ?? 500;
       if (idempotencyKey) {
         await prisma.idempotencyKey.create({
           data: {
             key: idempotencyKey,
             endpoint: `/api/reservations/${id}/confirm`,
-            responseBody: { error: result.error },
+            responseBody: { error: errMsg },
             statusCode,
           },
         });
       }
-      if (result.status === 404) return notFound(result.error ?? "Not found");
-      if (result.status === 410) return gone(result.error ?? "Gone");
-      return conflict(result.error ?? "Conflict");
+      if (statusCode === 404) return notFound(errMsg);
+      if (statusCode === 410) return gone(errMsg);
+      return conflict(errMsg);
     }
 
     if (idempotencyKey) {
