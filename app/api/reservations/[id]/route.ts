@@ -5,11 +5,10 @@ import { releaseExpiredReservations } from "@/lib/expiry";
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: { id: string } }
 ) {
-  const { id } = params;
+  const { id } = context.params;
 
-  // Lazy expiry check
   await releaseExpiredReservations();
 
   const reservation = await prisma.reservation.findUnique({
