@@ -106,7 +106,7 @@ export async function POST(
         data: {
           key: idempotencyKey,
           endpoint: `/api/reservations/${id}/confirm`,
-          responseBody: result.reservation as unknown as Record<string, unknown>,
+          responseBody: JSON.parse(JSON.stringify(result.reservation)),
           statusCode: 200,
           reservationId: id,
         },
