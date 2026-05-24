@@ -6,8 +6,11 @@ import { ok, conflict, badRequest, serverError } from "@/lib/api";
 
 const RESERVATION_TTL_MINUTES = 10;
 
+type TransactionResult =
+  | { error: string; status: number; reservation?: never }
+  | { reservation: object; error?: never; status?: never };
+
 export async function POST(req: NextRequest) {
-  // ── Idempotency ──────────────────────────────────────────────────────────
   const idempotencyKey = req.headers.get("idempotency-key");
   if (idempotencyKey) {
     const existing = await prisma.idempotencyKey.findUnique({
@@ -21,7 +24,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Validate body ────────────────────────────────────────────────────────
   let body: unknown;
   try {
     body = await req.json();
@@ -36,41 +38,25 @@ export async function POST(req: NextRequest) {
 
   const { productId, warehouseId, quantity } = parsed.data;
 
-  // ── Distributed lock per (product, warehouse) ────────────────────────────
-  // Prevents two concurrent requests from both reading "available > 0" and
-  // both proceeding to reserve the last unit.
   const lockKey = `reserve:${productId}:${warehouseId}`;
-  const release = await acquireLockWithRetry(lockKey, {
-    maxAttempts: 5,
-    delayMs: 80,
-  });
+  const release = await acquireLockWithRetry(lockKey, { maxAttempts: 5, delayMs: 80 });
 
   if (!release) {
-    return conflict("Another reservation is in progress for this item. Please try again.");
+    return conflict("Another reservation is in progress. Please try again.");
   }
 
   try {
-    // ── Transactional stock check + reserve ──────────────────────────────
-    // Even with the Redis lock, we use SELECT FOR UPDATE inside the
-    // transaction so this is safe if Redis is unavailable or in a
-    // single-instance deployment without Redis.
-    const result = await prisma.$transaction(async (tx) => {
-      // Lock the row at the DB level
-      const stockLevel = await tx.$queryRaw<
-        Array<{
-          id: string;
-          totalUnits: number;
-          reserved: number;
-        }>
-      >`
+    const result: TransactionResult = await prisma.$transaction(async (tx) => {
+      type StockRow = { id: string; totalUnits: number; reserved: number };
+      const stockLevel = await tx.$queryRaw`
         SELECT id, "totalUnits", reserved
         FROM "StockLevel"
         WHERE "productId" = ${productId} AND "warehouseId" = ${warehouseId}
         FOR UPDATE
-      `;
+      ` as StockRow[];
 
       if (stockLevel.length === 0) {
-        return { error: "Stock level not found for this product/warehouse combination", status: 404 };
+        return { error: "Stock level not found", status: 404 };
       }
 
       const sl = stockLevel[0];
@@ -83,66 +69,45 @@ export async function POST(req: NextRequest) {
         };
       }
 
-      // Increment reserved
       await tx.stockLevel.update({
         where: { id: sl.id },
         data: { reserved: { increment: quantity } },
       });
 
-      // Create reservation
       const expiresAt = new Date(Date.now() + RESERVATION_TTL_MINUTES * 60 * 1000);
       const reservation = await tx.reservation.create({
-        data: {
-          stockLevelId: sl.id,
-          quantity,
-          status: "PENDING",
-          expiresAt,
-        },
-        include: {
-          stockLevel: {
-            include: {
-              product: true,
-              warehouse: true,
-            },
-          },
-        },
+        data: { stockLevelId: sl.id, quantity, status: "PENDING", expiresAt },
+        include: { stockLevel: { include: { product: true, warehouse: true } } },
       });
 
       return { reservation };
     });
 
-    // ── Handle transaction result ────────────────────────────────────────
-    if ("error" in result) {
-      const response =
-        result.status === 409
-          ? conflict(result.error)
-          : badRequest(result.error);
-
+    if (result.error !== undefined) {
+      const errMsg = result.error;
+      const statusCode = result.status ?? 500;
       if (idempotencyKey) {
         await prisma.idempotencyKey.create({
           data: {
             key: idempotencyKey,
             endpoint: "/api/reservations",
-            responseBody: { error: result.error },
-            statusCode: result.status,
+            responseBody: { error: errMsg },
+            statusCode,
           },
         });
       }
-
-      return response;
+      return statusCode === 409 ? conflict(errMsg) : badRequest(errMsg);
     }
 
     const responseBody = result.reservation;
-
-    // ── Persist idempotency record ───────────────────────────────────────
     if (idempotencyKey) {
       await prisma.idempotencyKey.create({
         data: {
           key: idempotencyKey,
           endpoint: "/api/reservations",
-         responseBody: JSON.parse(JSON.stringify(responseBody)),
+          responseBody: JSON.parse(JSON.stringify(responseBody)),
           statusCode: 201,
-          reservationId: result.reservation.id,
+          reservationId: (responseBody as { id: string }).id,
         },
       });
     }
