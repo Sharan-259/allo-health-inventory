@@ -96,9 +96,9 @@ export async function POST(
           },
         });
       }
-      if (result.status === 404) return notFound(result.error);
-      if (result.status === 410) return gone(result.error);
-      return conflict(result.error);
+      if (result.status === 404) return notFound(result.error ?? "Not found");
+      if (result.status === 410) return gone(result.error ?? "Gone");
+      return conflict(result.error ?? "Conflict");
     }
 
     if (idempotencyKey) {
