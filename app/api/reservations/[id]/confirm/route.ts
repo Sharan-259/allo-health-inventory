@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ok, gone, notFound, conflict, serverError } from "@/lib/api";
 
+type ReservationRow = { id: string; status: string; expiresAt: Date };
+
 export async function POST(
   req: NextRequest,
   context: { params: { id: string } }
@@ -23,14 +25,12 @@ export async function POST(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw
-        Array<{ id: string; status: string; expiresAt: Date }>
-      >`
+      const rows = await tx.$queryRaw`
         SELECT id, status, "expiresAt"
         FROM "Reservation"
         WHERE id = ${id}
         FOR UPDATE
-      `;
+      ` as ReservationRow[];
 
       if (rows.length === 0) {
         return { error: "Reservation not found", status: 404 };
@@ -69,9 +69,7 @@ export async function POST(
         where: { id },
         data: { status: "CONFIRMED", confirmedAt: new Date() },
         include: {
-          stockLevel: {
-            include: { product: true, warehouse: true },
-          },
+          stockLevel: { include: { product: true, warehouse: true } },
         },
       });
 
@@ -87,13 +85,6 @@ export async function POST(
     });
 
     if ("error" in result) {
-      const response =
-        result.status === 404
-          ? notFound(result.error)
-          : result.status === 410
-          ? gone(result.error)
-          : conflict(result.error);
-
       if (idempotencyKey) {
         await prisma.idempotencyKey.create({
           data: {
@@ -104,7 +95,9 @@ export async function POST(
           },
         });
       }
-      return response;
+      if (result.status === 404) return notFound(result.error);
+      if (result.status === 410) return gone(result.error);
+      return conflict(result.error);
     }
 
     if (idempotencyKey) {
