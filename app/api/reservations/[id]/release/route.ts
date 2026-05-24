@@ -2,6 +2,13 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ok, notFound, conflict, serverError } from "@/lib/api";
 
+type ReservationRow = {
+  id: string;
+  status: string;
+  stockLevelId: string;
+  quantity: number;
+};
+
 export async function POST(
   _req: NextRequest,
   context: { params: { id: string } }
@@ -10,14 +17,12 @@ export async function POST(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw
-        Array<{ id: string; status: string; stockLevelId: string; quantity: number }>
-      >`
+      const rows = await tx.$queryRaw`
         SELECT id, status, "stockLevelId", quantity
         FROM "Reservation"
         WHERE id = ${id}
         FOR UPDATE
-      `;
+      ` as ReservationRow[];
 
       if (rows.length === 0) {
         return { error: "Reservation not found", status: 404 };
@@ -38,9 +43,7 @@ export async function POST(
         where: { id },
         data: { status: "RELEASED", releasedAt: new Date() },
         include: {
-          stockLevel: {
-            include: { product: true, warehouse: true },
-          },
+          stockLevel: { include: { product: true, warehouse: true } },
         },
       });
 
