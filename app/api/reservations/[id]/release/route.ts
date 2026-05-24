@@ -4,13 +4,13 @@ import { ok, notFound, conflict, serverError } from "@/lib/api";
 
 export async function POST(
   _req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: { id: string } }
 ) {
-  const { id } = params;
+  const { id } = context.params;
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<
+      const rows = await tx.$queryRaw
         Array<{ id: string; status: string; stockLevelId: string; quantity: number }>
       >`
         SELECT id, status, "stockLevelId", quantity
@@ -26,7 +26,6 @@ export async function POST(
       const reservation = rows[0];
 
       if (reservation.status === "RELEASED") {
-        // Already released — idempotent
         const full = await tx.reservation.findUnique({ where: { id } });
         return { reservation: full };
       }
@@ -45,7 +44,6 @@ export async function POST(
         },
       });
 
-      // Return reserved units to available pool
       await tx.stockLevel.update({
         where: { id: reservation.stockLevelId },
         data: { reserved: { decrement: reservation.quantity } },
@@ -55,11 +53,9 @@ export async function POST(
     });
 
     if ("error" in result) {
-      const response =
-        result.status === 404
-          ? notFound(result.error)
-          : conflict(result.error);
-      return response;
+      return result.status === 404
+        ? notFound(result.error)
+        : conflict(result.error);
     }
 
     return ok(result.reservation);
