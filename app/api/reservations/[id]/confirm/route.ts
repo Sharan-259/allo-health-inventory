@@ -97,10 +97,10 @@ export async function POST(
     if ("error" in result) {
       const response =
         result.status === 404
-          ? notFound(result.error)
+          ? notFound(result.error ?? "Not found")
           : result.status === 410
-          ? gone(result.error)
-          : conflict(result.error);
+          ? gone(result.error ?? "Gone")
+          : conflict(result.error ?? "Conflict");
 
       if (idempotencyKey) {
         await prisma.idempotencyKey.create({
