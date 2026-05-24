@@ -4,11 +4,10 @@ import { ok, gone, notFound, conflict, serverError } from "@/lib/api";
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: { id: string } }
 ) {
-  const { id } = params;
+  const { id } = context.params;
 
-  // ── Idempotency ──────────────────────────────────────────────────────────
   const idempotencyKey = req.headers.get("idempotency-key");
   if (idempotencyKey) {
     const existing = await prisma.idempotencyKey.findUnique({
@@ -24,8 +23,7 @@ export async function POST(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // Lock the reservation row
-      const rows = await tx.$queryRaw<
+      const rows = await tx.$queryRaw
         Array<{ id: string; status: string; expiresAt: Date }>
       >`
         SELECT id, status, "expiresAt"
@@ -41,7 +39,6 @@ export async function POST(
       const reservation = rows[0];
 
       if (reservation.status === "CONFIRMED") {
-        // Already confirmed — idempotent success
         const full = await tx.reservation.findUnique({ where: { id } });
         return { reservation: full };
       }
@@ -51,7 +48,6 @@ export async function POST(
       }
 
       if (new Date() > reservation.expiresAt) {
-        // Expired: release stock and mark released before returning 410
         const res = await tx.reservation.findUnique({
           where: { id },
           select: { stockLevelId: true, quantity: true },
@@ -71,10 +67,7 @@ export async function POST(
 
       const confirmed = await tx.reservation.update({
         where: { id },
-        data: {
-          status: "CONFIRMED",
-          confirmedAt: new Date(),
-        },
+        data: { status: "CONFIRMED", confirmedAt: new Date() },
         include: {
           stockLevel: {
             include: { product: true, warehouse: true },
@@ -82,7 +75,6 @@ export async function POST(
         },
       });
 
-      // Permanently decrement totalUnits and clear reserved hold
       await tx.stockLevel.update({
         where: { id: confirmed.stockLevelId },
         data: {
@@ -97,10 +89,10 @@ export async function POST(
     if ("error" in result) {
       const response =
         result.status === 404
-          ? notFound(result.error ?? "Not found")
+          ? notFound(result.error)
           : result.status === 410
-          ? gone(result.error ?? "Gone")
-          : conflict(result.error ?? "Conflict");
+          ? gone(result.error)
+          : conflict(result.error);
 
       if (idempotencyKey) {
         await prisma.idempotencyKey.create({
@@ -108,11 +100,10 @@ export async function POST(
             key: idempotencyKey,
             endpoint: `/api/reservations/${id}/confirm`,
             responseBody: { error: result.error },
-            statusCode: result.status ?? 500,
+            statusCode: result.status,
           },
         });
       }
-
       return response;
     }
 
