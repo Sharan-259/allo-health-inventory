@@ -2,31 +2,21 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ok, notFound, conflict, serverError } from "@/lib/api";
 
-type ReservationRow = {
-  id: string;
-  status: string;
-  stockLevelId: string;
-  quantity: number;
-};
+type ReservationRow = { id: string; status: string; stockLevelId: string; quantity: number };
+type TxResult =
+  | { error: string; status: number; reservation?: never }
+  | { reservation: object | null; error?: never; status?: never };
 
-export async function POST(
-  _req: NextRequest,
-  context: { params: { id: string } }
-) {
+export async function POST(_req: NextRequest, context: { params: { id: string } }) {
   const { id } = context.params;
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
+    const result: TxResult = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw`
-        SELECT id, status, "stockLevelId", quantity
-        FROM "Reservation"
-        WHERE id = ${id}
-        FOR UPDATE
+        SELECT id, status, "stockLevelId", quantity FROM "Reservation" WHERE id = ${id} FOR UPDATE
       ` as ReservationRow[];
 
-      if (rows.length === 0) {
-        return { error: "Reservation not found", status: 404 };
-      }
+      if (rows.length === 0) return { error: "Reservation not found", status: 404 };
 
       const reservation = rows[0];
 
@@ -42,9 +32,7 @@ export async function POST(
       const released = await tx.reservation.update({
         where: { id },
         data: { status: "RELEASED", releasedAt: new Date() },
-        include: {
-          stockLevel: { include: { product: true, warehouse: true } },
-        },
+        include: { stockLevel: { include: { product: true, warehouse: true } } },
       });
 
       await tx.stockLevel.update({
@@ -55,10 +43,10 @@ export async function POST(
       return { reservation: released };
     });
 
-    if ("error" in result) {
-      return result.status === 404
-        ? notFound(result.error)
-        : conflict(result.error);
+    if (result.error !== undefined) {
+      const errMsg = result.error;
+      const statusCode = result.status ?? 500;
+      return statusCode === 404 ? notFound(errMsg) : conflict(errMsg);
     }
 
     return ok(result.reservation);
