@@ -85,13 +85,14 @@ export async function POST(
     });
 
     if ("error" in result) {
+      const statusCode = result.status ?? 500;
       if (idempotencyKey) {
         await prisma.idempotencyKey.create({
           data: {
             key: idempotencyKey,
             endpoint: `/api/reservations/${id}/confirm`,
             responseBody: { error: result.error },
-            statusCode: result.status,
+            statusCode,
           },
         });
       }
